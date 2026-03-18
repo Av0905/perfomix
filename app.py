@@ -445,9 +445,109 @@ def get_models(_df):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# CSV UPLOAD & VALIDATION
+# ══════════════════════════════════════════════════════════════════════════════
+REQUIRED_COLS = FEATURE_COLS  # the 11 numeric feature columns
+
+def validate_and_prepare_csv(uploaded_df: pd.DataFrame):
+    """
+    Validates uploaded CSV, fills optional columns with defaults,
+    and computes fatigue_risk + readiness_level if missing.
+    Returns (cleaned_df, list_of_warnings).
+    """
+    warnings_list = []
+    df = uploaded_df.copy()
+
+    # ── Normalise column names ──────────────────────────────────────────────
+    df.columns = (
+        df.columns.str.strip()
+                  .str.lower()
+                  .str.replace(" ", "_")
+                  .str.replace(r"[^a-z0-9_]", "", regex=True)
+    )
+
+    # ── Check required numeric feature columns ──────────────────────────────
+    missing_required = [c for c in REQUIRED_COLS if c not in df.columns]
+    if missing_required:
+        return None, [f"❌ Missing required columns: **{', '.join(missing_required)}**. "
+                      f"Please ensure your CSV has all 11 feature columns."]
+
+    # ── Coerce numeric columns ──────────────────────────────────────────────
+    for col in REQUIRED_COLS:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+        null_count = df[col].isnull().sum()
+        if null_count > 0:
+            median_val = df[col].median()
+            df[col].fillna(median_val, inplace=True)
+            warnings_list.append(f"⚠️ `{col}`: {null_count} missing value(s) filled with median ({median_val:.1f}).")
+
+    # ── Fill optional identity columns with defaults if missing ─────────────
+    if "employee_id" not in df.columns:
+        df.insert(0, "employee_id", [f"EMP{str(i).zfill(4)}" for i in range(1, len(df)+1)])
+        warnings_list.append("ℹ️ `employee_id` not found — auto-generated.")
+    if "name" not in df.columns:
+        df.insert(1, "name", [f"Employee_{i}" for i in range(1, len(df)+1)])
+        warnings_list.append("ℹ️ `name` not found — auto-generated.")
+    if "department" not in df.columns:
+        df["department"] = "Unknown"
+        warnings_list.append("ℹ️ `department` not found — set to 'Unknown'.")
+    if "role" not in df.columns:
+        df["role"] = "Unknown"
+        warnings_list.append("ℹ️ `role` not found — set to 'Unknown'.")
+    if "batch" not in df.columns:
+        df["batch"] = "Unknown"
+        warnings_list.append("ℹ️ `batch` not found — set to 'Unknown'.")
+
+    # ── Compute performance_score if missing ────────────────────────────────
+    if "performance_score" not in df.columns:
+        df["performance_score"] = np.round((
+            0.20 * df["quiz_score"] + 0.20 * df["coding_score"] +
+            0.15 * df["attendance"] + 0.15 * df["task_completion"] +
+            0.10 * df["feedback_rating"] * 20 +
+            0.10 * df["engagement_score"] + 0.10 * df["technical_assessment"]
+        ), 1).clip(0, 100)
+        warnings_list.append("ℹ️ `performance_score` computed automatically from feature columns.")
+
+    # ── Compute fatigue_risk if missing ─────────────────────────────────────
+    if "fatigue_risk" not in df.columns:
+        def assign_risk(row):
+            s = (row.attendance*0.2 + row.task_completion*0.2 + row.quiz_score*0.15
+                 + row.coding_score*0.15 + row.engagement_score*0.15
+                 + row.feedback_rating * 20 * 0.15)
+            return "High" if s < 50 else ("Medium" if s < 70 else "Low")
+        df["fatigue_risk"] = df.apply(assign_risk, axis=1)
+        warnings_list.append("ℹ️ `fatigue_risk` computed automatically.")
+
+    # ── Compute readiness_level if missing ──────────────────────────────────
+    if "readiness_level" not in df.columns:
+        df["readiness_level"] = pd.cut(
+            df["performance_score"],
+            bins=[-1, 54.9, 74.9, 100],
+            labels=["Not Ready", "Partially Ready", "Ready"]
+        ).astype(str)
+        warnings_list.append("ℹ️ `readiness_level` computed automatically.")
+
+    return df, warnings_list
+
+
+def show_csv_template():
+    """Return a sample CSV template as bytes for download."""
+    sample = pd.DataFrame([{
+        "employee_id": "EMP0001", "name": "John Doe",
+        "department": "Backend Dev", "role": "Intern", "batch": "Batch-2024",
+        "study_hours": 5.5, "screen_time": 6.0, "quiz_score": 70,
+        "coding_score": 65, "attendance": 80, "task_completion": 75,
+        "feedback_rating": 3.8, "engagement_score": 68,
+        "communication_score": 62, "technical_assessment": 66,
+        "learning_progression": 5.0,
+    }])
+    return sample.to_csv(index=False).encode()
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
-def build_sidebar(df_raw):
+def build_sidebar():
     st.sidebar.markdown("""
     <div style='background:linear-gradient(135deg,#1F4E79,#2E75B6);padding:1rem;
     border-radius:10px;color:white;margin-bottom:1rem;'>
@@ -455,6 +555,59 @@ def build_sidebar(df_raw):
         <p style='margin:0;font-size:0.8rem;color:#BDD7EE;'>Readiness & Stability Platform</p>
     </div>""", unsafe_allow_html=True)
 
+    # ── Data Source ─────────────────────────────────────────────────────────
+    st.sidebar.markdown("### 📂 Data Source")
+    uploaded_file = st.sidebar.file_uploader(
+        "Upload your CSV file",
+        type=["csv"],
+        help="Upload a workforce CSV. Missing columns will be auto-computed."
+    )
+
+    if uploaded_file is not None:
+        # ── Parse & validate uploaded CSV ───────────────────────────────────
+        try:
+            raw_upload = pd.read_csv(uploaded_file)
+        except Exception as e:
+            st.sidebar.error(f"❌ Could not read CSV: {e}")
+            df_raw = get_data()
+            data_source = "🔵 Demo Data"
+        else:
+            cleaned, warns = validate_and_prepare_csv(raw_upload)
+            if cleaned is None:
+                # Hard failure — missing required columns
+                for w in warns:
+                    st.sidebar.error(w)
+                st.sidebar.download_button(
+                    "⬇️ Download CSV Template",
+                    show_csv_template(),
+                    "workforce_template.csv", "text/csv"
+                )
+                df_raw = get_data()
+                data_source = "🔵 Demo Data (upload failed)"
+            else:
+                df_raw = cleaned
+                data_source = f"🟢 Uploaded: **{uploaded_file.name}** ({len(df_raw)} rows)"
+                if warns:
+                    with st.sidebar.expander("⚠️ Upload Notes", expanded=False):
+                        for w in warns:
+                            st.markdown(w)
+    else:
+        df_raw = get_data()
+        data_source = "🔵 Demo Data (300 synthetic employees)"
+
+    st.sidebar.caption(data_source)
+
+    # ── Template download ────────────────────────────────────────────────────
+    st.sidebar.download_button(
+        "📄 Download CSV Template",
+        show_csv_template(),
+        "workforce_template.csv", "text/csv",
+        help="Download a sample CSV to see the expected column format."
+    )
+
+    st.sidebar.markdown("---")
+
+    # ── Navigation ───────────────────────────────────────────────────────────
     page = st.sidebar.radio("📌 Navigate", [
         "🏠 Dashboard Overview",
         "📊 Performance Analysis",
@@ -466,6 +619,8 @@ def build_sidebar(df_raw):
     ])
 
     st.sidebar.markdown("---")
+
+    # ── Filters ──────────────────────────────────────────────────────────────
     st.sidebar.markdown("### 🔧 Filters")
     depts   = ["All"] + sorted(df_raw["department"].unique().tolist())
     roles   = ["All"] + sorted(df_raw["role"].unique().tolist())
@@ -481,9 +636,13 @@ def build_sidebar(df_raw):
     if sel_batch != "All": df = df[df["batch"]      == sel_batch]
 
     st.sidebar.markdown(f"**Filtered Records:** {len(df)}")
-    st.sidebar.download_button("⬇️ Download Data", df.to_csv(index=False).encode(),
-                                "workforce_data.csv", "text/csv")
-    return page, df
+    st.sidebar.download_button(
+        "⬇️ Download Filtered Data",
+        df.to_csv(index=False).encode(),
+        "workforce_filtered.csv", "text/csv"
+    )
+
+    return page, df, df_raw
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -751,9 +910,8 @@ def page_employee_lookup(df):
 # MAIN ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
-    df_raw = get_data()
+    page, df, df_raw = build_sidebar()
     risk_clf, risk_le, risk_m, ready_clf, ready_le, ready_m, fi = get_models(df_raw)
-    page, df = build_sidebar(df_raw)
 
     if   page == "🏠 Dashboard Overview":    page_dashboard(df)
     elif page == "📊 Performance Analysis":  page_performance(df)
@@ -766,3 +924,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
