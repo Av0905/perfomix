@@ -447,68 +447,176 @@ def get_models(_df):
 # ══════════════════════════════════════════════════════════════════════════════
 # CSV UPLOAD & VALIDATION
 # ══════════════════════════════════════════════════════════════════════════════
-REQUIRED_COLS = FEATURE_COLS  # the 11 numeric feature columns
+
+# Flexible column alias map — maps many possible CSV column names → internal name
+COLUMN_ALIASES = {
+    # employee identity
+    "employee_id":          ["employee_id","emp_id","id","emp_code","employee_code","serial","sr_no","sno"],
+    "name":                 ["name","employee_name","emp_name","full_name","student_name","candidate_name"],
+    "department":           ["department","dept","team","division","unit","group"],
+    "role":                 ["role","designation","position","type","job_title","emp_type","employee_type"],
+    "batch":                ["batch","cohort","batch_id","intake","year","joining_year","joining_batch"],
+
+    # numeric features
+    "study_hours":          ["study_hours","study_hrs","hours_studied","daily_study_hours","learning_hours","study_time"],
+    "screen_time":          ["screen_time","screen_hrs","screen_hours","device_time","online_hours","digital_hours","age"],
+    "quiz_score":           ["quiz_score","quiz","quiz_marks","test_score","exam_score","marks","score","assessment_score","coding_score_2"],
+    "coding_score":         ["coding_score","code_score","coding_marks","programming_score","technical_score","tech_score"],
+    "attendance":           ["attendance","attendance_pct","attendance_percent","attendance_%","present_days","presence"],
+    "task_completion":      ["task_completion","task_completion_rate","tasks_completed","task_done","completion_rate","task_score","task_completion_%"],
+    "feedback_rating":      ["feedback_rating","feedback","rating","manager_rating","mentor_rating","supervisor_rating","peer_rating"],
+    "engagement_score":     ["engagement_score","engagement","engagement_level","engage_score","participation","involvement"],
+    "communication_score":  ["communication_score","communication","comm_score","soft_skills","interpersonal","verbal_score"],
+    "technical_assessment": ["technical_assessment","technical","tech_assessment","aptitude","aptitude_score","technical_test","tech_test"],
+    "learning_progression": ["learning_progression","learning_progress","improvement","progress","growth","growth_rate","weekly_improvement"],
+
+    # target/label columns
+    "fatigue_risk":         ["fatigue_risk","risk","risk_level","fatigue_level","burnout_risk","stress_level","risk_category"],
+    "readiness_level":      ["readiness_level","readiness","workforce_readiness","performance_status","performance_level","status","stability","stability_status"],
+    "performance_score":    ["performance_score","performance","perf_score","overall_score","final_score","total_score","score"],
+}
+
+# Engagement level text → numeric mapping
+ENGAGEMENT_TEXT_MAP = {"high": 80, "medium": 55, "low": 30,
+                       "very high": 90, "very low": 15, "excellent": 90, "good": 70, "poor": 25}
+
+# Performance status → readiness level mapping
+PERF_STATUS_MAP = {
+    "stable": "Ready", "good": "Ready", "excellent": "Ready",
+    "moderate": "Partially Ready", "average": "Partially Ready", "satisfactory": "Partially Ready",
+    "declining": "Not Ready", "poor": "Not Ready", "bad": "Not Ready", "at risk": "Not Ready",
+}
+
+
+def _auto_map_columns(df: pd.DataFrame) -> tuple:
+    """
+    Auto-maps uploaded CSV columns to internal names using COLUMN_ALIASES.
+    Returns (renamed_df, mapping_log).
+    """
+    # normalise column names first
+    df = df.copy()
+    df.columns = (df.columns.str.strip().str.lower()
+                             .str.replace(" ", "_").str.replace(r"[^a-z0-9_]", "", regex=True))
+    current_cols = set(df.columns)
+    rename_map   = {}
+    mapping_log  = []
+
+    for internal_name, aliases in COLUMN_ALIASES.items():
+        if internal_name in current_cols:
+            continue  # already correct name
+        for alias in aliases:
+            if alias in current_cols and alias not in rename_map.values():
+                rename_map[alias] = internal_name
+                mapping_log.append(f"ℹ️ `{alias}` → mapped to `{internal_name}`")
+                break
+
+    df.rename(columns=rename_map, inplace=True)
+    return df, mapping_log
+
 
 def validate_and_prepare_csv(uploaded_df: pd.DataFrame):
     """
-    Validates uploaded CSV, fills optional columns with defaults,
-    and computes fatigue_risk + readiness_level if missing.
-    Returns (cleaned_df, list_of_warnings).
+    Step 1 — auto-map column names using aliases.
+    Step 2 — handle text-encoded columns (Engagement_Level, Performance_Status).
+    Step 3 — fill any still-missing columns with smart defaults / computed values.
+    Step 4 — coerce all numeric columns and fill NaNs.
+    Returns (cleaned_df, warnings_list) or (None, [error]) on hard failure.
     """
-    warnings_list = []
-    df = uploaded_df.copy()
+    warns = []
+    df, mapping_log = _auto_map_columns(uploaded_df)
+    warns.extend(mapping_log)
 
-    # ── Normalise column names ──────────────────────────────────────────────
-    df.columns = (
-        df.columns.str.strip()
-                  .str.lower()
-                  .str.replace(" ", "_")
-                  .str.replace(r"[^a-z0-9_]", "", regex=True)
-    )
+    # ── Convert text engagement levels → numeric score ──────────────────────
+    if "engagement_score" in df.columns:
+        sample_vals = df["engagement_score"].dropna().astype(str).str.lower().str.strip()
+        is_text = sample_vals.isin(ENGAGEMENT_TEXT_MAP.keys()).any()
+        if is_text or df["engagement_score"].dtype == object:
+            df["engagement_score"] = (
+                df["engagement_score"].astype(str).str.lower().str.strip()
+                   .map(ENGAGEMENT_TEXT_MAP)
+            )
+            warns.append("\u2139\ufe0f `engagement_score`: text levels (High/Medium/Low) converted to numeric (80/55/30).")
 
-    # ── Check required numeric feature columns ──────────────────────────────
-    missing_required = [c for c in REQUIRED_COLS if c not in df.columns]
-    if missing_required:
-        return None, [f"❌ Missing required columns: **{', '.join(missing_required)}**. "
-                      f"Please ensure your CSV has all 11 feature columns."]
+    # ── Convert Performance_Status text → readiness_level ───────────────────
+    if "readiness_level" in df.columns and df["readiness_level"].dtype == object:
+        mapped = df["readiness_level"].str.lower().str.strip().map(PERF_STATUS_MAP)
+        if mapped.notna().sum() > 0:
+            df["readiness_level"] = mapped.fillna("Partially Ready")
+            warns.append("ℹ️ `readiness_level`: text status (Stable/Moderate/Declining) converted to readiness labels.")
 
-    # ── Coerce numeric columns ──────────────────────────────────────────────
-    for col in REQUIRED_COLS:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-        null_count = df[col].isnull().sum()
-        if null_count > 0:
-            median_val = df[col].median()
-            df[col].fillna(median_val, inplace=True)
-            warnings_list.append(f"⚠️ `{col}`: {null_count} missing value(s) filled with median ({median_val:.1f}).")
+    # ── Standardise fatigue_risk capitalisation ─────────────────────────────
+    if "fatigue_risk" in df.columns:
+        df["fatigue_risk"] = df["fatigue_risk"].astype(str).str.strip().str.capitalize()
+        df["fatigue_risk"] = df["fatigue_risk"].replace(
+            {"Medium risk":"Medium","High risk":"High","Low risk":"Low",
+             "Moderate":"Medium","Critical":"High","Safe":"Low"}
+        )
 
-    # ── Fill optional identity columns with defaults if missing ─────────────
+    # ── Fill missing identity columns ────────────────────────────────────────
     if "employee_id" not in df.columns:
         df.insert(0, "employee_id", [f"EMP{str(i).zfill(4)}" for i in range(1, len(df)+1)])
-        warnings_list.append("ℹ️ `employee_id` not found — auto-generated.")
+        warns.append("ℹ️ `employee_id` auto-generated.")
     if "name" not in df.columns:
         df.insert(1, "name", [f"Employee_{i}" for i in range(1, len(df)+1)])
-        warnings_list.append("ℹ️ `name` not found — auto-generated.")
+        warns.append("ℹ️ `name` auto-generated.")
     if "department" not in df.columns:
         df["department"] = "Unknown"
-        warnings_list.append("ℹ️ `department` not found — set to 'Unknown'.")
+        warns.append("ℹ️ `department` not found — set to 'Unknown'.")
     if "role" not in df.columns:
         df["role"] = "Unknown"
-        warnings_list.append("ℹ️ `role` not found — set to 'Unknown'.")
+        warns.append("ℹ️ `role` not found — set to 'Unknown'.")
     if "batch" not in df.columns:
         df["batch"] = "Unknown"
-        warnings_list.append("ℹ️ `batch` not found — set to 'Unknown'.")
+        warns.append("ℹ️ `batch` not found — set to 'Unknown'.")
 
-    # ── Compute performance_score if missing ────────────────────────────────
+    # ── Fill missing numeric features with synthetic defaults ────────────────
+    NUMERIC_DEFAULTS = {
+        "screen_time": 6.0, "quiz_score": None,          # None = use coding_score proxy
+        "communication_score": None,                       # None = use engagement_score proxy
+        "technical_assessment": None,                      # None = use coding_score proxy
+        "learning_progression": 5.0,
+    }
+    for col, default in NUMERIC_DEFAULTS.items():
+        if col not in df.columns:
+            if col == "quiz_score" and "coding_score" in df.columns:
+                df[col] = (pd.to_numeric(df["coding_score"], errors="coerce") * 0.95).round(1)
+                warns.append(f"ℹ️ `quiz_score` not found — estimated from `coding_score`.")
+            elif col == "communication_score" and "engagement_score" in df.columns:
+                df[col] = (pd.to_numeric(df["engagement_score"], errors="coerce") * 0.90).round(1)
+                warns.append(f"ℹ️ `communication_score` not found — estimated from `engagement_score`.")
+            elif col == "technical_assessment" and "coding_score" in df.columns:
+                df[col] = (pd.to_numeric(df["coding_score"], errors="coerce") * 1.05).clip(0,100).round(1)
+                warns.append(f"ℹ️ `technical_assessment` not found — estimated from `coding_score`.")
+            else:
+                df[col] = default
+                warns.append(f"ℹ️ `{col}` not found — set to default ({default}).")
+
+    # ── Check that all 11 feature cols now exist ─────────────────────────────
+    still_missing = [c for c in FEATURE_COLS if c not in df.columns]
+    if still_missing:
+        return None, [f"❌ Could not resolve columns: **{', '.join(still_missing)}**. "
+                      f"Please rename them in your CSV or use the template below."]
+
+    # ── Coerce all feature cols to numeric + fill NaNs with median ───────────
+    for col in FEATURE_COLS:
+        df[col] = pd.to_numeric(df[col], errors="coerce")
+        nulls = df[col].isnull().sum()
+        if nulls > 0:
+            med = df[col].median()
+            df[col].fillna(med, inplace=True)
+            warns.append(f"⚠️ `{col}`: {nulls} missing value(s) filled with median ({med:.1f}).")
+
+    # ── Compute performance_score if still missing ───────────────────────────
     if "performance_score" not in df.columns:
         df["performance_score"] = np.round((
-            0.20 * df["quiz_score"] + 0.20 * df["coding_score"] +
-            0.15 * df["attendance"] + 0.15 * df["task_completion"] +
+            0.20 * df["quiz_score"]    + 0.20 * df["coding_score"] +
+            0.15 * df["attendance"]    + 0.15 * df["task_completion"] +
             0.10 * df["feedback_rating"] * 20 +
             0.10 * df["engagement_score"] + 0.10 * df["technical_assessment"]
         ), 1).clip(0, 100)
-        warnings_list.append("ℹ️ `performance_score` computed automatically from feature columns.")
+        warns.append("ℹ️ `performance_score` computed from feature columns.")
 
-    # ── Compute fatigue_risk if missing ─────────────────────────────────────
+    # ── Compute fatigue_risk if still missing ────────────────────────────────
     if "fatigue_risk" not in df.columns:
         def assign_risk(row):
             s = (row.attendance*0.2 + row.task_completion*0.2 + row.quiz_score*0.15
@@ -516,30 +624,29 @@ def validate_and_prepare_csv(uploaded_df: pd.DataFrame):
                  + row.feedback_rating * 20 * 0.15)
             return "High" if s < 50 else ("Medium" if s < 70 else "Low")
         df["fatigue_risk"] = df.apply(assign_risk, axis=1)
-        warnings_list.append("ℹ️ `fatigue_risk` computed automatically.")
+        warns.append("ℹ️ `fatigue_risk` computed automatically.")
 
-    # ── Compute readiness_level if missing ──────────────────────────────────
+    # ── Compute readiness_level if still missing ─────────────────────────────
     if "readiness_level" not in df.columns:
         df["readiness_level"] = pd.cut(
             df["performance_score"],
             bins=[-1, 54.9, 74.9, 100],
-            labels=["Not Ready", "Partially Ready", "Ready"]
+            labels=["Not Ready","Partially Ready","Ready"]
         ).astype(str)
-        warnings_list.append("ℹ️ `readiness_level` computed automatically.")
+        warns.append("ℹ️ `readiness_level` computed automatically.")
 
-    return df, warnings_list
+    return df, warns
 
 
 def show_csv_template():
     """Return a sample CSV template as bytes for download."""
     sample = pd.DataFrame([{
-        "employee_id": "EMP0001", "name": "John Doe",
-        "department": "Backend Dev", "role": "Intern", "batch": "Batch-2024",
-        "study_hours": 5.5, "screen_time": 6.0, "quiz_score": 70,
-        "coding_score": 65, "attendance": 80, "task_completion": 75,
-        "feedback_rating": 3.8, "engagement_score": 68,
-        "communication_score": 62, "technical_assessment": 66,
-        "learning_progression": 5.0,
+        "employee_id":"EMP0001","name":"John Doe","department":"Backend Dev",
+        "role":"Intern","batch":"Batch-2024",
+        "study_hours":5.5,"screen_time":6.0,"quiz_score":70,"coding_score":65,
+        "attendance":80,"task_completion":75,"feedback_rating":3.8,
+        "engagement_score":68,"communication_score":62,
+        "technical_assessment":66,"learning_progression":5.0,
     }])
     return sample.to_csv(index=False).encode()
 
@@ -924,4 +1031,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
