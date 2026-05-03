@@ -1,5 +1,5 @@
 """
-Intelligent System for Identifying Workforce Readiness
+Performix: Intelligent System for Identifying Workforce Readiness
 and Performance Stability in Entry-Level Professionals
 ────────────────────────────────────────────────────────
 Single-file Streamlit Application (Streamlit Cloud compatible)
@@ -445,276 +445,16 @@ def get_models(_df):
 
 
 # ══════════════════════════════════════════════════════════════════════════════
-# CSV UPLOAD & VALIDATION
-# ══════════════════════════════════════════════════════════════════════════════
-
-# Flexible column alias map — maps many possible CSV column names → internal name
-COLUMN_ALIASES = {
-    # employee identity
-    "employee_id":          ["employee_id","emp_id","id","emp_code","employee_code","serial","sr_no","sno"],
-    "name":                 ["name","employee_name","emp_name","full_name","student_name","candidate_name"],
-    "department":           ["department","dept","team","division","unit","group"],
-    "role":                 ["role","designation","position","type","job_title","emp_type","employee_type"],
-    "batch":                ["batch","cohort","batch_id","intake","year","joining_year","joining_batch"],
-
-    # numeric features
-    "study_hours":          ["study_hours","study_hrs","hours_studied","daily_study_hours","learning_hours","study_time"],
-    "screen_time":          ["screen_time","screen_hrs","screen_hours","device_time","online_hours","digital_hours","age"],
-    "quiz_score":           ["quiz_score","quiz","quiz_marks","test_score","exam_score","marks","score","assessment_score","coding_score_2"],
-    "coding_score":         ["coding_score","code_score","coding_marks","programming_score","technical_score","tech_score"],
-    "attendance":           ["attendance","attendance_pct","attendance_percent","attendance_%","present_days","presence"],
-    "task_completion":      ["task_completion","task_completion_rate","tasks_completed","task_done","completion_rate","task_score","task_completion_%"],
-    "feedback_rating":      ["feedback_rating","feedback","rating","manager_rating","mentor_rating","supervisor_rating","peer_rating"],
-    "engagement_score":     ["engagement_score","engagement","engagement_level","engage_score","participation","involvement"],
-    "communication_score":  ["communication_score","communication","comm_score","soft_skills","interpersonal","verbal_score"],
-    "technical_assessment": ["technical_assessment","technical","tech_assessment","aptitude","aptitude_score","technical_test","tech_test"],
-    "learning_progression": ["learning_progression","learning_progress","improvement","progress","growth","growth_rate","weekly_improvement"],
-
-    # target/label columns
-    "fatigue_risk":         ["fatigue_risk","risk","risk_level","fatigue_level","burnout_risk","stress_level","risk_category"],
-    "readiness_level":      ["readiness_level","readiness","workforce_readiness","performance_status","performance_level","status","stability","stability_status"],
-    "performance_score":    ["performance_score","performance","perf_score","overall_score","final_score","total_score","score"],
-}
-
-# Engagement level text → numeric mapping
-ENGAGEMENT_TEXT_MAP = {"high": 80, "medium": 55, "low": 30,
-                       "very high": 90, "very low": 15, "excellent": 90, "good": 70, "poor": 25}
-
-# Performance status → readiness level mapping
-PERF_STATUS_MAP = {
-    "stable": "Ready", "good": "Ready", "excellent": "Ready",
-    "moderate": "Partially Ready", "average": "Partially Ready", "satisfactory": "Partially Ready",
-    "declining": "Not Ready", "poor": "Not Ready", "bad": "Not Ready", "at risk": "Not Ready",
-}
-
-
-def _auto_map_columns(df: pd.DataFrame) -> tuple:
-    """
-    Auto-maps uploaded CSV columns to internal names using COLUMN_ALIASES.
-    Returns (renamed_df, mapping_log).
-    """
-    # normalise column names first
-    df = df.copy()
-    df.columns = (df.columns.str.strip().str.lower()
-                             .str.replace(" ", "_").str.replace(r"[^a-z0-9_]", "", regex=True))
-    current_cols = set(df.columns)
-    rename_map   = {}
-    mapping_log  = []
-
-    for internal_name, aliases in COLUMN_ALIASES.items():
-        if internal_name in current_cols:
-            continue  # already correct name
-        for alias in aliases:
-            if alias in current_cols and alias not in rename_map.values():
-                rename_map[alias] = internal_name
-                mapping_log.append(f"ℹ️ `{alias}` → mapped to `{internal_name}`")
-                break
-
-    df.rename(columns=rename_map, inplace=True)
-    return df, mapping_log
-
-
-def validate_and_prepare_csv(uploaded_df: pd.DataFrame):
-    """
-    Step 1 — auto-map column names using aliases.
-    Step 2 — handle text-encoded columns (Engagement_Level, Performance_Status).
-    Step 3 — fill any still-missing columns with smart defaults / computed values.
-    Step 4 — coerce all numeric columns and fill NaNs.
-    Returns (cleaned_df, warnings_list) or (None, [error]) on hard failure.
-    """
-    warns = []
-    df, mapping_log = _auto_map_columns(uploaded_df)
-    warns.extend(mapping_log)
-
-    # ── Convert text engagement levels → numeric score ──────────────────────
-    if "engagement_score" in df.columns:
-        sample_vals = df["engagement_score"].dropna().astype(str).str.lower().str.strip()
-        is_text = sample_vals.isin(ENGAGEMENT_TEXT_MAP.keys()).any()
-        if is_text or df["engagement_score"].dtype == object:
-            df["engagement_score"] = (
-                df["engagement_score"].astype(str).str.lower().str.strip()
-                   .map(ENGAGEMENT_TEXT_MAP)
-            )
-            warns.append("\u2139\ufe0f `engagement_score`: text levels (High/Medium/Low) converted to numeric (80/55/30).")
-
-    # ── Convert Performance_Status text → readiness_level ───────────────────
-    if "readiness_level" in df.columns and df["readiness_level"].dtype == object:
-        mapped = df["readiness_level"].str.lower().str.strip().map(PERF_STATUS_MAP)
-        if mapped.notna().sum() > 0:
-            df["readiness_level"] = mapped.fillna("Partially Ready")
-            warns.append("ℹ️ `readiness_level`: text status (Stable/Moderate/Declining) converted to readiness labels.")
-
-    # ── Standardise fatigue_risk capitalisation ─────────────────────────────
-    if "fatigue_risk" in df.columns:
-        df["fatigue_risk"] = df["fatigue_risk"].astype(str).str.strip().str.capitalize()
-        df["fatigue_risk"] = df["fatigue_risk"].replace(
-            {"Medium risk":"Medium","High risk":"High","Low risk":"Low",
-             "Moderate":"Medium","Critical":"High","Safe":"Low"}
-        )
-
-    # ── Fill missing identity columns ────────────────────────────────────────
-    if "employee_id" not in df.columns:
-        df.insert(0, "employee_id", [f"EMP{str(i).zfill(4)}" for i in range(1, len(df)+1)])
-        warns.append("ℹ️ `employee_id` auto-generated.")
-    if "name" not in df.columns:
-        df.insert(1, "name", [f"Employee_{i}" for i in range(1, len(df)+1)])
-        warns.append("ℹ️ `name` auto-generated.")
-    if "department" not in df.columns:
-        df["department"] = "Unknown"
-        warns.append("ℹ️ `department` not found — set to 'Unknown'.")
-    if "role" not in df.columns:
-        df["role"] = "Unknown"
-        warns.append("ℹ️ `role` not found — set to 'Unknown'.")
-    if "batch" not in df.columns:
-        df["batch"] = "Unknown"
-        warns.append("ℹ️ `batch` not found — set to 'Unknown'.")
-
-    # ── Fill missing numeric features with synthetic defaults ────────────────
-    NUMERIC_DEFAULTS = {
-        "screen_time": 6.0, "quiz_score": None,          # None = use coding_score proxy
-        "communication_score": None,                       # None = use engagement_score proxy
-        "technical_assessment": None,                      # None = use coding_score proxy
-        "learning_progression": 5.0,
-    }
-    for col, default in NUMERIC_DEFAULTS.items():
-        if col not in df.columns:
-            if col == "quiz_score" and "coding_score" in df.columns:
-                df[col] = (pd.to_numeric(df["coding_score"], errors="coerce") * 0.95).round(1)
-                warns.append(f"ℹ️ `quiz_score` not found — estimated from `coding_score`.")
-            elif col == "communication_score" and "engagement_score" in df.columns:
-                df[col] = (pd.to_numeric(df["engagement_score"], errors="coerce") * 0.90).round(1)
-                warns.append(f"ℹ️ `communication_score` not found — estimated from `engagement_score`.")
-            elif col == "technical_assessment" and "coding_score" in df.columns:
-                df[col] = (pd.to_numeric(df["coding_score"], errors="coerce") * 1.05).clip(0,100).round(1)
-                warns.append(f"ℹ️ `technical_assessment` not found — estimated from `coding_score`.")
-            else:
-                df[col] = default
-                warns.append(f"ℹ️ `{col}` not found — set to default ({default}).")
-
-    # ── Check that all 11 feature cols now exist ─────────────────────────────
-    still_missing = [c for c in FEATURE_COLS if c not in df.columns]
-    if still_missing:
-        return None, [f"❌ Could not resolve columns: **{', '.join(still_missing)}**. "
-                      f"Please rename them in your CSV or use the template below."]
-
-    # ── Coerce all feature cols to numeric + fill NaNs with median ───────────
-    for col in FEATURE_COLS:
-        df[col] = pd.to_numeric(df[col], errors="coerce")
-        nulls = df[col].isnull().sum()
-        if nulls > 0:
-            med = df[col].median()
-            df[col].fillna(med, inplace=True)
-            warns.append(f"⚠️ `{col}`: {nulls} missing value(s) filled with median ({med:.1f}).")
-
-    # ── Compute performance_score if still missing ───────────────────────────
-    if "performance_score" not in df.columns:
-        df["performance_score"] = np.round((
-            0.20 * df["quiz_score"]    + 0.20 * df["coding_score"] +
-            0.15 * df["attendance"]    + 0.15 * df["task_completion"] +
-            0.10 * df["feedback_rating"] * 20 +
-            0.10 * df["engagement_score"] + 0.10 * df["technical_assessment"]
-        ), 1).clip(0, 100)
-        warns.append("ℹ️ `performance_score` computed from feature columns.")
-
-    # ── Compute fatigue_risk if still missing ────────────────────────────────
-    if "fatigue_risk" not in df.columns:
-        def assign_risk(row):
-            s = (row.attendance*0.2 + row.task_completion*0.2 + row.quiz_score*0.15
-                 + row.coding_score*0.15 + row.engagement_score*0.15
-                 + row.feedback_rating * 20 * 0.15)
-            return "High" if s < 50 else ("Medium" if s < 70 else "Low")
-        df["fatigue_risk"] = df.apply(assign_risk, axis=1)
-        warns.append("ℹ️ `fatigue_risk` computed automatically.")
-
-    # ── Compute readiness_level if still missing ─────────────────────────────
-    if "readiness_level" not in df.columns:
-        df["readiness_level"] = pd.cut(
-            df["performance_score"],
-            bins=[-1, 54.9, 74.9, 100],
-            labels=["Not Ready","Partially Ready","Ready"]
-        ).astype(str)
-        warns.append("ℹ️ `readiness_level` computed automatically.")
-
-    return df, warns
-
-
-def show_csv_template():
-    """Return a sample CSV template as bytes for download."""
-    sample = pd.DataFrame([{
-        "employee_id":"EMP0001","name":"John Doe","department":"Backend Dev",
-        "role":"Intern","batch":"Batch-2024",
-        "study_hours":5.5,"screen_time":6.0,"quiz_score":70,"coding_score":65,
-        "attendance":80,"task_completion":75,"feedback_rating":3.8,
-        "engagement_score":68,"communication_score":62,
-        "technical_assessment":66,"learning_progression":5.0,
-    }])
-    return sample.to_csv(index=False).encode()
-
-
-# ══════════════════════════════════════════════════════════════════════════════
 # SIDEBAR
 # ══════════════════════════════════════════════════════════════════════════════
-def build_sidebar():
+def build_sidebar(df_raw):
     st.sidebar.markdown("""
     <div style='background:linear-gradient(135deg,#1F4E79,#2E75B6);padding:1rem;
     border-radius:10px;color:white;margin-bottom:1rem;'>
-        <h3 style='margin:0;color:white;'>🧠 Workforce IQ</h3>
-        <p style='margin:0;font-size:0.8rem;color:#BDD7EE;'>Readiness & Stability Platform</p>
+        <h3 style='margin:0;color:white;'>🧠 Performix IQ</h3>
+        <p style='margin:0;font-size:0.8rem;color:#BDD7EE;'>Performix Platform</p>
     </div>""", unsafe_allow_html=True)
 
-    # ── Data Source ─────────────────────────────────────────────────────────
-    st.sidebar.markdown("### 📂 Data Source")
-    uploaded_file = st.sidebar.file_uploader(
-        "Upload your CSV file",
-        type=["csv"],
-        help="Upload a workforce CSV. Missing columns will be auto-computed."
-    )
-
-    if uploaded_file is not None:
-        # ── Parse & validate uploaded CSV ───────────────────────────────────
-        try:
-            raw_upload = pd.read_csv(uploaded_file)
-        except Exception as e:
-            st.sidebar.error(f"❌ Could not read CSV: {e}")
-            df_raw = get_data()
-            data_source = "🔵 Demo Data"
-        else:
-            cleaned, warns = validate_and_prepare_csv(raw_upload)
-            if cleaned is None:
-                # Hard failure — missing required columns
-                for w in warns:
-                    st.sidebar.error(w)
-                st.sidebar.download_button(
-                    "⬇️ Download CSV Template",
-                    show_csv_template(),
-                    "workforce_template.csv", "text/csv"
-                )
-                df_raw = get_data()
-                data_source = "🔵 Demo Data (upload failed)"
-            else:
-                df_raw = cleaned
-                data_source = f"🟢 Uploaded: **{uploaded_file.name}** ({len(df_raw)} rows)"
-                if warns:
-                    with st.sidebar.expander("⚠️ Upload Notes", expanded=False):
-                        for w in warns:
-                            st.markdown(w)
-    else:
-        df_raw = get_data()
-        data_source = "🔵 Demo Data (300 synthetic employees)"
-
-    st.sidebar.caption(data_source)
-
-    # ── Template download ────────────────────────────────────────────────────
-    st.sidebar.download_button(
-        "📄 Download CSV Template",
-        show_csv_template(),
-        "workforce_template.csv", "text/csv",
-        help="Download a sample CSV to see the expected column format."
-    )
-
-    st.sidebar.markdown("---")
-
-    # ── Navigation ───────────────────────────────────────────────────────────
     page = st.sidebar.radio("📌 Navigate", [
         "🏠 Dashboard Overview",
         "📊 Performance Analysis",
@@ -726,8 +466,6 @@ def build_sidebar():
     ])
 
     st.sidebar.markdown("---")
-
-    # ── Filters ──────────────────────────────────────────────────────────────
     st.sidebar.markdown("### 🔧 Filters")
     depts   = ["All"] + sorted(df_raw["department"].unique().tolist())
     roles   = ["All"] + sorted(df_raw["role"].unique().tolist())
@@ -743,13 +481,9 @@ def build_sidebar():
     if sel_batch != "All": df = df[df["batch"]      == sel_batch]
 
     st.sidebar.markdown(f"**Filtered Records:** {len(df)}")
-    st.sidebar.download_button(
-        "⬇️ Download Filtered Data",
-        df.to_csv(index=False).encode(),
-        "workforce_filtered.csv", "text/csv"
-    )
-
-    return page, df, df_raw
+    st.sidebar.download_button("⬇️ Download Data", df.to_csv(index=False).encode(),
+                                "performix_data.csv", "text/csv")
+    return page, df
 
 
 # ══════════════════════════════════════════════════════════════════════════════
@@ -758,7 +492,7 @@ def build_sidebar():
 def page_dashboard(df):
     st.markdown("""
     <div class='main-header'>
-        <h1>🧠 Intelligent Workforce Readiness & Performance Stability System</h1>
+        <h1>🧠 Performix: Intelligent Workforce Readiness & Performance Stability System</h1>
         <p>Advanced talent analytics for IT organizations — Onboarding Intelligence Platform</p>
     </div>""", unsafe_allow_html=True)
 
@@ -1017,8 +751,9 @@ def page_employee_lookup(df):
 # MAIN ENTRY POINT
 # ══════════════════════════════════════════════════════════════════════════════
 def main():
-    page, df, df_raw = build_sidebar()
+    df_raw = get_data()
     risk_clf, risk_le, risk_m, ready_clf, ready_le, ready_m, fi = get_models(df_raw)
+    page, df = build_sidebar(df_raw)
 
     if   page == "🏠 Dashboard Overview":    page_dashboard(df)
     elif page == "📊 Performance Analysis":  page_performance(df)
