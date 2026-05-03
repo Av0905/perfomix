@@ -1,6 +1,5 @@
 """
-Intelligent System for Identifying Workforce Readiness
-and Performance Stability in Entry-Level Professionals
+Performix Intelligence
 ────────────────────────────────────────────────────────
 Single-file Streamlit Application (Streamlit Cloud compatible)
 All 7 modules are self-contained — zero relative imports.
@@ -658,7 +657,7 @@ def build_sidebar():
     st.sidebar.markdown("""
     <div style='background:linear-gradient(135deg,#1F4E79,#2E75B6);padding:1rem;
     border-radius:10px;color:white;margin-bottom:1rem;'>
-        <h3 style='margin:0;color:white;'>🧠 Workforce IQ</h3>
+        <h3 style='margin:0;color:white;'>🧠 Performix Intelligence</h3>
         <p style='margin:0;font-size:0.8rem;color:#BDD7EE;'>Readiness & Stability Platform</p>
     </div>""", unsafe_allow_html=True)
 
@@ -687,7 +686,7 @@ def build_sidebar():
                 st.sidebar.download_button(
                     "⬇️ Download CSV Template",
                     show_csv_template(),
-                    "workforce_template.csv", "text/csv"
+                    "performix_template.csv", "text/csv"
                 )
                 df_raw = get_data()
                 data_source = "🔵 Demo Data (upload failed)"
@@ -708,7 +707,7 @@ def build_sidebar():
     st.sidebar.download_button(
         "📄 Download CSV Template",
         show_csv_template(),
-        "workforce_template.csv", "text/csv",
+        "performix_template.csv", "text/csv",
         help="Download a sample CSV to see the expected column format."
     )
 
@@ -746,7 +745,7 @@ def build_sidebar():
     st.sidebar.download_button(
         "⬇️ Download Filtered Data",
         df.to_csv(index=False).encode(),
-        "workforce_filtered.csv", "text/csv"
+        "performix_filtered.csv", "text/csv"
     )
 
     return page, df, df_raw
@@ -758,7 +757,7 @@ def build_sidebar():
 def page_dashboard(df):
     st.markdown("""
     <div class='main-header'>
-        <h1>🧠 Intelligent Workforce Readiness & Performance Stability System</h1>
+        <h1>🧠 Performix Intelligence</h1>
         <p>Advanced talent analytics for IT organizations — Onboarding Intelligence Platform</p>
     </div>""", unsafe_allow_html=True)
 
