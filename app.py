@@ -26,7 +26,7 @@ from sklearn.preprocessing import LabelEncoder
 # PAGE CONFIG
 # ══════════════════════════════════════════════════════════════════════════════
 st.set_page_config(
-    page_title="Workforce Readiness Intelligence",
+    page_title="Performix Intelligence",
     page_icon="🧠",
     layout="wide",
     initial_sidebar_state="expanded",
